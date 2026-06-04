@@ -1,11 +1,12 @@
 import math
 import torch.nn as nn
 from dataclasses import dataclass
+from gpt_from_scratch import tokenizer
 
 
 @dataclass
 class GPTConfig:
-    vocab_size: int = 8
+    vocab_size: int = tokenizer.ByteTokenizer.vocab_size
     d_model: int = 128
     d_layers: int = 2
     d_feedforward: int = 128 * 4
@@ -37,13 +38,15 @@ class GPT(nn.Module):
     def __init__(self, config: GPTConfig):
         super().__init__()
         self.cfg = config
+        self.tokenizer = tokenizer.ByteTokenizer()
         self.embedding = nn.Embedding(config.vocab_size, config.d_model)
         self.blocks = nn.ModuleList(
             config.d_layers * [TransformerBlock(config.d_model, config.d_feedforward)]
         )
         self.final_linear = nn.Linear(config.d_model, config.vocab_size)
 
-    def forward(self, tokens):
+    def forward(self, input: str):
+        tokens = self.tokenizer.encode(input)
         x = self.embedding(tokens)
         for block in self.blocks:
             x = block(x)
