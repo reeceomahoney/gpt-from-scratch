@@ -1,4 +1,5 @@
 import math
+import time
 
 import datasets
 import torch
@@ -54,6 +55,8 @@ def main():
     model = GPT(GPTConfig()).to(config.device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr)
 
+    last_log_step = 0
+    last_log_time = time.perf_counter()
     for step in range(1, config.max_steps + 1):
         _, loss = model(get_batch(train_text, config))
         optimizer.zero_grad()
@@ -62,9 +65,13 @@ def main():
 
         if step % config.eval_every == 0 or step == 1:
             val_loss = evaluate(model, val_text, config)
+            now = time.perf_counter()
+            steps_per_sec = (step - last_log_step) / (now - last_log_time)
+            last_log_step, last_log_time = step, now
             print(
                 f"step {step:5d} | train {loss.item():.4f} | "
-                f"val {val_loss:.4f} | perplexity {math.exp(val_loss):.2f}"
+                f"val {val_loss:.4f} | perplexity {math.exp(val_loss):.2f} | "
+                f"{steps_per_sec:.2f} steps/sec"
             )
 
     torch.save(model.state_dict(), config.save_path)
