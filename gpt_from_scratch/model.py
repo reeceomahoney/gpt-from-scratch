@@ -83,7 +83,16 @@ class GPT(nn.Module):
         attn_mask = causal[None] & pad_mask[:, None, :]  # (B, T, T)
 
         logits = self.forward_tokens(tokens, attn_mask)
-        return logits, pad_mask
+
+        # Next-character prediction: predict token t+1 from positions up to t.
+        shift_logits = logits[:, :-1].reshape(-1, logits.size(-1))
+        targets = tokens[:, 1:].clone()
+        targets[~pad_mask[:, 1:]] = -100
+        loss = nn.functional.cross_entropy(
+            shift_logits, targets.reshape(-1), ignore_index=-100
+        )
+
+        return logits, loss
 
     @torch.no_grad()
     def predict(
