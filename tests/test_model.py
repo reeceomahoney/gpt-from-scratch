@@ -3,18 +3,18 @@ import torch
 
 
 def test_transformer_block():
-    tf = model.TransformerBlock(64, 64 * 4)
-    x = torch.randn((8, 64))
+    tf = model.TransformerBlock(64, 8, 64 * 4)
+    x = torch.randn((2, 8, 64))
     x = tf(x)
-    assert x.shape == (8, 64)
+    assert x.shape == (2, 8, 64)
 
 
 def test_gpt():
     config = model.GPTConfig()
     gpt = model.GPT(config)
-    logits, pad_mask = gpt(["hi", "hello"])
+    logits, loss = gpt(["hi", "hello"])
     assert logits.shape == (2, 5, config.vocab_size)
-    assert pad_mask.shape == (2, 5)
+    assert loss.ndim == 0
 
 
 def test_predict():

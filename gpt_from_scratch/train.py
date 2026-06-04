@@ -7,18 +7,24 @@ from dataclasses import dataclass, field
 from gpt_from_scratch.model import GPT, GPTConfig
 
 
+def default_device() -> str:
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 @dataclass
 class TrainConfig:
-    block_size: int = 100  # characters per training example
+    block_size: int = 256
     batch_size: int = 32
     lr: float = 3e-4
-    max_steps: int = 2000
+    max_steps: int = 5000
     eval_every: int = 200
     eval_steps: int = 50
     save_path: str = "gpt.pt"
-    device: str = field(
-        default_factory=lambda: "cuda" if torch.cuda.is_available() else "cpu"
-    )
+    device: str = field(default_factory=lambda: default_device())
 
 
 ds = datasets.load_dataset("karpathy/tiny_shakespeare", revision="refs/convert/parquet")

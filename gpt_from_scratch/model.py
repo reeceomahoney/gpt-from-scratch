@@ -9,31 +9,50 @@ from gpt_from_scratch import tokenizer
 class GPTConfig:
     vocab_size: int = tokenizer.ByteTokenizer.vocab_size
     context_length: int = 256
-    d_model: int = 128
-    d_layers: int = 2
-    d_feedforward: int = 128 * 4
+    d_model: int = 384
+    d_layers: int = 6
+    n_heads: int = 6
+    d_feedforward: int = 384 * 4
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, d_model: int, d_feedfoward):
+    def __init__(self, d_model: int, n_heads: int, d_feedfoward):
         super().__init__()
+        assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
         self.d_model = d_model
+        self.n_heads = n_heads
+        self.head_dim = d_model // n_heads
 
         self.k = nn.Linear(d_model, d_model)
         self.q = nn.Linear(d_model, d_model)
         self.v = nn.Linear(d_model, d_model)
+        self.out_proj = nn.Linear(d_model, d_model)
         self.norm_1 = nn.LayerNorm(d_model)
 
         self.up_proj = nn.Linear(d_model, d_feedfoward)
         self.down_proj = nn.Linear(d_feedfoward, d_model)
         self.norm_2 = nn.LayerNorm(d_model)
 
+    def _split_heads(self, x):
+        B, T, _ = x.shape
+        # (B, T, d_model) -> (B, n_heads, T, head_dim)
+        return x.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+
     def forward(self, x, attn_mask=None):
-        k, q, v = self.k(x), self.q(x), self.v(x)
-        scores = (q @ k.transpose(-2, -1)) / math.sqrt(self.d_model)  # (B, T, T)
+        B, T, _ = x.shape
+        k = self._split_heads(self.k(x))  # (B, H, T, head_dim)
+        q = self._split_heads(self.q(x))
+        v = self._split_heads(self.v(x))
+
+        scores = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)  # (B, H, T, T)
         if attn_mask is not None:
-            scores = scores.masked_fill(~attn_mask, float("-inf"))
-        attn = nn.functional.softmax(scores, dim=-1) @ v
+            scores = scores.masked_fill(~attn_mask[:, None], float("-inf"))
+        attn = nn.functional.softmax(scores, dim=-1) @ v  # (B, H, T, head_dim)
+
+        # (B, H, T, head_dim) -> (B, T, d_model)
+        attn = attn.transpose(1, 2).reshape(B, T, self.d_model)
+        attn = self.out_proj(attn)
+
         x = x + self.norm_1(attn)
         x = x + self.norm_2(self.down_proj(self.up_proj(x)))
         return x
@@ -49,12 +68,17 @@ class GPT(nn.Module):
         self.blocks = nn.ModuleList(
             nn.ModuleList(
                 [
-                    TransformerBlock(config.d_model, config.d_feedforward)
+                    TransformerBlock(
+                        config.d_model, config.n_heads, config.d_feedforward
+                    )
                     for _ in range(config.d_layers)
                 ]
             )
         )
         self.final_linear = nn.Linear(config.d_model, config.vocab_size)
+
+        n_params = sum(p.numel() for p in self.parameters())
+        print(f"GPT initialized with {n_params / 1e6:.2f}M parameters")
 
     @property
     def device(self) -> torch.device:
