@@ -8,6 +8,7 @@ from gpt_from_scratch import tokenizer
 @dataclass
 class GPTConfig:
     vocab_size: int = tokenizer.ByteTokenizer.vocab_size
+    context_length: int = 256
     d_model: int = 128
     d_layers: int = 2
     d_feedforward: int = 128 * 4
@@ -44,6 +45,7 @@ class GPT(nn.Module):
         self.cfg = config
         self.tokenizer = tokenizer.ByteTokenizer()
         self.embedding = nn.Embedding(config.vocab_size, config.d_model)
+        self.pos_embedding = nn.Embedding(config.context_length, config.d_model)
         self.blocks = nn.ModuleList(
             nn.ModuleList(
                 [
@@ -54,16 +56,62 @@ class GPT(nn.Module):
         )
         self.final_linear = nn.Linear(config.d_model, config.vocab_size)
 
+    @property
+    def device(self) -> torch.device:
+        return self.embedding.weight.device
+
+    def forward_tokens(self, tokens: torch.Tensor, attn_mask=None) -> torch.Tensor:
+        """Run the transformer on a (B, T) tensor of token ids -> (B, T, vocab)."""
+        T = tokens.size(1)
+        assert T <= self.cfg.context_length, (
+            f"sequence length {T} exceeds context_length"
+        )
+
+        pos = torch.arange(T, device=tokens.device)
+        x = self.embedding(tokens) + self.pos_embedding(pos)  # (B, T, d_model)
+        for block in self.blocks:
+            x = block(x, attn_mask)
+        return self.final_linear(x)
+
     def forward(self, inputs: list[str]):
         tokens, pad_mask = self.tokenizer.encode_batch(inputs)  # (B, T), (B, T)
+        tokens = tokens.to(self.device)
+        pad_mask = pad_mask.to(tokens.device)
         T = tokens.size(1)
 
         causal = torch.tril(torch.ones(T, T, dtype=torch.bool, device=tokens.device))
         attn_mask = causal[None] & pad_mask[:, None, :]  # (B, T, T)
 
-        x = self.embedding(tokens)
-        for block in self.blocks:
-            x = block(x, attn_mask)
-        x = self.final_linear(x)
-        probs = nn.functional.softmax(x, dim=-1)
-        return nn.functional.softmax(x, dim=-1)  # (B, T, vocab_size)
+        logits = self.forward_tokens(tokens, attn_mask)
+        return logits, pad_mask
+
+    @torch.no_grad()
+    def predict(
+        self,
+        prompt: str,
+        max_new_tokens: int = 100,
+        temperature: float = 1.0,
+        top_k: int | None = None,
+    ) -> str:
+        was_training = self.training
+        self.eval()
+        tokens = self.tokenizer.encode(prompt)[None].to(self.device)  # (1, T)
+
+        for _ in range(max_new_tokens):
+            # Crop to the last context_length tokens so positions stay in range.
+            idx = tokens[:, -self.cfg.context_length :]
+            T = idx.size(1)
+            causal = torch.tril(torch.ones(T, T, dtype=torch.bool, device=self.device))
+            logits = self.forward_tokens(idx, causal[None])  # (1, T, vocab)
+
+            logits = logits[:, -1, :] / temperature  # (1, vocab)
+            if top_k is not None:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[:, [-1]]] = float("-inf")
+            probs = nn.functional.softmax(logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)  # (1, 1)
+            tokens = torch.cat([tokens, next_token], dim=1)
+
+        if was_training:
+            self.train()
+        return self.tokenizer.decode(tokens[0])
