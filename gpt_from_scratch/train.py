@@ -1,3 +1,5 @@
+import math
+
 import datasets
 import torch
 from dataclasses import dataclass, field
@@ -54,7 +56,10 @@ def main():
 
         if step % config.eval_every == 0 or step == 1:
             val_loss = evaluate(model, val_text, config)
-            print(f"step {step:5d} | train {loss.item():.4f} | val {val_loss:.4f}")
+            print(
+                f"step {step:5d} | train {loss.item():.4f} | "
+                f"val {val_loss:.4f} | perplexity {math.exp(val_loss):.2f}"
+            )
 
     torch.save(model.state_dict(), config.save_path)
     print(f"saved model to {config.save_path}")
