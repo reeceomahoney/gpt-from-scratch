@@ -21,6 +21,9 @@ class TrainConfig:
     block_size: int = 256
     batch_size: int = 32
     lr: float = 3e-4
+    min_lr: float = 3e-5
+    warmup_steps: int = 100
+    weight_decay: float = 0.1
     max_steps: int = 5000
     eval_every: int = 200
     eval_steps: int = 50
@@ -39,6 +42,17 @@ def get_batch(text: str, config: TrainConfig) -> list[str]:
     return [text[s : s + config.block_size] for s in starts.tolist()]
 
 
+def get_lr(step: int, config: TrainConfig) -> float:
+    # Linear warmup, then cosine decay from lr down to min_lr.
+    if step < config.warmup_steps:
+        return config.lr * step / config.warmup_steps
+    if step > config.max_steps:
+        return config.min_lr
+    ratio = (step - config.warmup_steps) / (config.max_steps - config.warmup_steps)
+    coeff = 0.5 * (1 + math.cos(math.pi * ratio))
+    return config.min_lr + coeff * (config.lr - config.min_lr)
+
+
 @torch.no_grad()
 def evaluate(model: GPT, text: str, config: TrainConfig) -> float:
     model.eval()
@@ -53,11 +67,26 @@ def main():
     config = TrainConfig()
     torch.manual_seed(0)
     model = GPT(GPTConfig()).to(config.device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr)
+
+    # Weight-decay 2D params (matmuls, embeddings); skip biases and LayerNorm gains.
+    decay = [p for p in model.parameters() if p.requires_grad and p.dim() >= 2]
+    no_decay = [p for p in model.parameters() if p.requires_grad and p.dim() < 2]
+    optimizer = torch.optim.AdamW(
+        [
+            {"params": decay, "weight_decay": config.weight_decay},
+            {"params": no_decay, "weight_decay": 0.0},
+        ],
+        lr=config.lr,
+        betas=(0.9, 0.95),
+    )
 
     last_log_step = 0
     last_log_time = time.perf_counter()
     for step in range(1, config.max_steps + 1):
+        lr = get_lr(step, config)
+        for group in optimizer.param_groups:
+            group["lr"] = lr
+
         _, loss = model(get_batch(train_text, config))
         optimizer.zero_grad()
         loss.backward()
@@ -71,7 +100,7 @@ def main():
             print(
                 f"step {step:5d} | train {loss.item():.4f} | "
                 f"val {val_loss:.4f} | perplexity {math.exp(val_loss):.2f} | "
-                f"{steps_per_sec:.2f} steps/sec"
+                f"lr {lr:.2e} | {steps_per_sec:.2f} steps/sec"
             )
 
     torch.save(model.state_dict(), config.save_path)

@@ -13,11 +13,13 @@ class GPTConfig:
     d_layers: int = 6
     n_heads: int = 6
     d_feedforward: int = 384 * 4
+    dropout: float = 0.2
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, d_model: int, n_heads: int, d_feedfoward):
+    def __init__(self, config: GPTConfig):
         super().__init__()
+        d_model, n_heads = config.d_model, config.n_heads
         assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
         self.d_model = d_model
         self.n_heads = n_heads
@@ -28,10 +30,14 @@ class TransformerBlock(nn.Module):
         self.v = nn.Linear(d_model, d_model)
         self.out_proj = nn.Linear(d_model, d_model)
         self.norm_1 = nn.LayerNorm(d_model)
+        self.attn_dropout = nn.Dropout(config.dropout)
+        self.resid_dropout_1 = nn.Dropout(config.dropout)
 
-        self.up_proj = nn.Linear(d_model, d_feedfoward)
-        self.down_proj = nn.Linear(d_feedfoward, d_model)
+        self.up_proj = nn.Linear(d_model, config.d_feedforward)
+        self.act = nn.GELU()
+        self.down_proj = nn.Linear(config.d_feedforward, d_model)
         self.norm_2 = nn.LayerNorm(d_model)
+        self.resid_dropout_2 = nn.Dropout(config.dropout)
 
     def _split_heads(self, x):
         B, T, _ = x.shape
@@ -47,14 +53,16 @@ class TransformerBlock(nn.Module):
         scores = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)  # (B, H, T, T)
         if attn_mask is not None:
             scores = scores.masked_fill(~attn_mask[:, None], float("-inf"))
-        attn = nn.functional.softmax(scores, dim=-1) @ v  # (B, H, T, head_dim)
+        weights = self.attn_dropout(nn.functional.softmax(scores, dim=-1))
+        attn = weights @ v  # (B, H, T, head_dim)
 
         # (B, H, T, head_dim) -> (B, T, d_model)
         attn = attn.transpose(1, 2).reshape(B, T, self.d_model)
-        attn = self.out_proj(attn)
+        attn = self.resid_dropout_1(self.out_proj(attn))
 
         x = x + self.norm_1(attn)
-        x = x + self.norm_2(self.down_proj(self.up_proj(x)))
+        ffn = self.resid_dropout_2(self.down_proj(self.act(self.up_proj(x))))
+        x = x + self.norm_2(ffn)
         return x
 
 
@@ -65,15 +73,9 @@ class GPT(nn.Module):
         self.tokenizer = tokenizer.ByteTokenizer()
         self.embedding = nn.Embedding(config.vocab_size, config.d_model)
         self.pos_embedding = nn.Embedding(config.context_length, config.d_model)
+        self.embed_dropout = nn.Dropout(config.dropout)
         self.blocks = nn.ModuleList(
-            nn.ModuleList(
-                [
-                    TransformerBlock(
-                        config.d_model, config.n_heads, config.d_feedforward
-                    )
-                    for _ in range(config.d_layers)
-                ]
-            )
+            nn.ModuleList([TransformerBlock(config) for _ in range(config.d_layers)])
         )
         self.final_linear = nn.Linear(config.d_model, config.vocab_size)
 
@@ -93,6 +95,7 @@ class GPT(nn.Module):
 
         pos = torch.arange(T, device=tokens.device)
         x = self.embedding(tokens) + self.pos_embedding(pos)  # (B, T, d_model)
+        x = self.embed_dropout(x)
         for block in self.blocks:
             x = block(x, attn_mask)
         return self.final_linear(x)

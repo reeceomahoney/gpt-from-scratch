@@ -3,7 +3,8 @@ import torch
 
 
 def test_transformer_block():
-    tf = model.TransformerBlock(64, 8, 64 * 4)
+    config = model.GPTConfig(d_model=64, n_heads=8, d_feedforward=64 * 4)
+    tf = model.TransformerBlock(config)
     x = torch.randn((2, 8, 64))
     x = tf(x)
     assert x.shape == (2, 8, 64)
