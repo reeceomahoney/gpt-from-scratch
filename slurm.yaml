@@ -1,0 +1,26 @@
+clusters:
+  isambard:
+    host: u6jz.aip2.isambard
+    remote_path: /home/u6jz/reece.u6jz/gpt_from_scratch
+    time: 24
+    gpu: ""
+    ngpu: 2
+    cpus: 144
+    mem: 1600M
+    partition: workq
+
+envs:
+  - WANDB_API_KEY
+  - HF_TOKEN
+  - MUJOCO_GL: egl
+  - OPENBLAS_NUM_THREADS: 8
+  - OMP_NUM_THREADS: 8
+  - MKL_NUM_THREADS: 8
+  - TORCHINDUCTOR_CACHE_DIR: $HOME/.cache/torchinductor
+  - TRITON_CACHE_DIR: $HOME/.cache/triton
+  - PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+  - CMAKE_POLICY_VERSION_MINIMUM: 3.5
+
+command: |-
+  module load cuda/12.6
+  uv run gpt_from_scratch/train.py
