@@ -11,3 +11,24 @@ def test_tokenizer():
 
     x = tk.decode(tokens)
     assert x == "foobar"
+
+
+def test_encode_batch():
+    tk = tokenizer.ByteTokenizer()
+    tokens, mask = tk.encode_batch(["hi", "hello"])
+
+    expected_tokens = torch.tensor(
+        [
+            [104, 105, 0, 0, 0],
+            [104, 101, 108, 108, 111],
+        ]
+    ).long()
+    assert (tokens == expected_tokens).all()
+
+    expected_mask = torch.tensor(
+        [
+            [True, True, False, False, False],
+            [True, True, True, True, True],
+        ]
+    )
+    assert (mask == expected_mask).all()

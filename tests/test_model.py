@@ -12,5 +12,5 @@ def test_transformer_block():
 def test_gpt():
     config = model.GPTConfig()
     gpt = model.GPT(config)
-    probs = gpt("foobar")
-    assert probs.shape == (6, config.vocab_size)
+    probs = gpt(["hi", "hello"])
+    assert probs.shape == (2, 5, config.vocab_size)
