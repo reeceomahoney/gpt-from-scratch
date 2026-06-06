@@ -1,18 +1,24 @@
+import math
+
 import torch
 import torch.nn as nn
 from dataclasses import dataclass
 from gpt_from_scratch import tokenizer
 
+TOKENIZERS = {"gpt2": tokenizer.GPT2Tokenizer, "byte": tokenizer.ByteTokenizer}
+
 
 @dataclass
 class GPTConfig:
-    vocab_size: int = tokenizer.ByteTokenizer.vocab_size
-    context_length: int = 256
-    d_model: int = 384
-    d_layers: int = 6
-    n_heads: int = 6
-    d_feedforward: int = 384 * 4
-    dropout: float = 0.2
+    # Defaults describe GPT-2 small (~124M) on GPT-2 BPE.
+    vocab_size: int = 50304  # 50257 padded up to a multiple of 64 for efficiency
+    context_length: int = 1024
+    d_model: int = 768
+    d_layers: int = 12
+    n_heads: int = 12
+    d_feedforward: int = 768 * 4
+    dropout: float = 0.0  # web-scale single pass: no overfitting to regularize
+    tokenizer: str = "gpt2"
 
 
 class TransformerBlock(nn.Module):
@@ -54,10 +60,18 @@ class TransformerBlock(nn.Module):
         q = self._split_heads(self.q(x))
         v = self._split_heads(self.v(x))
 
-        mask = attn_mask[:, None] if attn_mask is not None else None
-        attn = nn.functional.scaled_dot_product_attention(
-            q, k, v, attn_mask=mask, dropout_p=self.dropout if self.training else 0.0
-        )  # (B, H, T, head_dim)
+        dropout_p = self.dropout if self.training else 0.0
+        if attn_mask is not None:
+            # Explicit (B, T, T) mask (padding + causal), used by the string path.
+            attn = nn.functional.scaled_dot_product_attention(
+                q, k, v, attn_mask=attn_mask[:, None], dropout_p=dropout_p
+            )
+        else:
+            # Packed token batches have no padding: let SDPA build the causal mask
+            # itself, which enables the fused/flash kernels.
+            attn = nn.functional.scaled_dot_product_attention(
+                q, k, v, is_causal=True, dropout_p=dropout_p
+            )  # (B, H, T, head_dim)
 
         # (B, H, T, head_dim) -> (B, T, d_model)
         attn = attn.transpose(1, 2).reshape(B, T, self.d_model)
@@ -71,7 +85,7 @@ class GPT(nn.Module):
     def __init__(self, config: GPTConfig):
         super().__init__()
         self.cfg = config
-        self.tokenizer = tokenizer.ByteTokenizer()
+        self.tokenizer = TOKENIZERS[config.tokenizer]()
         self.embedding = nn.Embedding(config.vocab_size, config.d_model)
         self.pos_embedding = nn.Embedding(config.context_length, config.d_model)
         self.embed_dropout = nn.Dropout(config.dropout)
@@ -82,6 +96,14 @@ class GPT(nn.Module):
         self.final_linear = nn.Linear(config.d_model, config.vocab_size)
         self.final_linear.weight = self.embedding.weight
         self.apply(self._init_weights)
+
+        # GPT-2 residual scaling: shrink the projections that write into the
+        # residual stream by 1/sqrt(2 * n_layers) so its variance stays ~constant
+        # with depth. Without this, deep pre-norm stacks initialize too hot.
+        residual_std = 0.02 / math.sqrt(2 * config.d_layers)
+        for name, p in self.named_parameters():
+            if name.endswith(("out_proj.weight", "down_proj.weight")):
+                nn.init.normal_(p, mean=0.0, std=residual_std)
 
         n_params = sum(p.numel() for p in self.parameters())
         print(f"GPT initialized with {n_params / 1e6:.2f}M parameters")
@@ -110,6 +132,20 @@ class GPT(nn.Module):
         for block in self.blocks:
             x = block(x, attn_mask)
         return self.final_linear(self.final_norm(x))
+
+    def loss_from_tokens(
+        self, tokens: torch.Tensor, targets: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Loss for pre-tokenized, densely-packed (B, T) batches.
+
+        No padding mask: attention is causal via SDPA's is_causal path. This is
+        the hot path for web-scale training.
+        """
+        logits = self.forward_tokens(tokens)  # (B, T, vocab)
+        loss = nn.functional.cross_entropy(
+            logits.reshape(-1, logits.size(-1)), targets.reshape(-1)
+        )
+        return logits, loss
 
     def forward(self, inputs: list[str]):
         tokens, pad_mask = self.tokenizer.encode_batch(inputs)  # (B, T), (B, T)

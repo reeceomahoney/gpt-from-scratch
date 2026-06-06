@@ -11,3 +11,7 @@ wheels/
 
 # Model checkpoints
 *.pt
+
+# Tokenized dataset shards
+data/
+*.bin

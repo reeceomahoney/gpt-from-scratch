@@ -3,8 +3,9 @@ import math
 
 import torch
 
+from gpt_from_scratch.data import TokenLoader
 from gpt_from_scratch.model import GPT, GPTConfig
-from gpt_from_scratch.train import TrainConfig, evaluate, val_text
+from gpt_from_scratch.train import TrainConfig, evaluate
 
 
 def load_model(path: str, device: str) -> GPT:
@@ -30,7 +31,8 @@ def main():
     torch.manual_seed(0)
     model = load_model(args.checkpoint, config.device)
 
-    val_loss = evaluate(model, val_text, config)
+    val_loader = TokenLoader(config.data_dir, "val", config.block_size)
+    val_loss = evaluate(model, val_loader, config)
     print(f"val loss {val_loss:.4f} | perplexity {math.exp(val_loss):.2f}")
 
     sample = model.predict(
