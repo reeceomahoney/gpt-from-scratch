@@ -80,6 +80,7 @@ def main():
         betas=(0.9, 0.95),
     )
 
+    best_val = float("inf")
     last_log_step = 0
     last_log_time = time.perf_counter()
     for step in range(1, config.max_steps + 1):
@@ -97,14 +98,20 @@ def main():
             now = time.perf_counter()
             steps_per_sec = (step - last_log_step) / (now - last_log_time)
             last_log_step, last_log_time = step, now
+
+            is_best = val_loss < best_val
+            if is_best:
+                best_val = val_loss
+                torch.save(model.state_dict(), config.save_path)
+
             print(
                 f"step {step:5d} | train {loss.item():.4f} | "
                 f"val {val_loss:.4f} | perplexity {math.exp(val_loss):.2f} | "
                 f"lr {lr:.2e} | {steps_per_sec:.2f} steps/sec"
+                f"{' | saved best' if is_best else ''}"
             )
 
-    torch.save(model.state_dict(), config.save_path)
-    print(f"saved model to {config.save_path}")
+    print(f"best val {best_val:.4f} | saved model to {config.save_path}")
 
 
 if __name__ == "__main__":
