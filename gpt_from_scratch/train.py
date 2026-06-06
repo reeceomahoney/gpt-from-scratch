@@ -24,7 +24,7 @@ class TrainConfig:
     min_lr: float = 3e-5
     warmup_steps: int = 100
     weight_decay: float = 0.1
-    max_steps: int = 5000
+    max_steps: int = 10000
     eval_every: int = 200
     eval_steps: int = 50
     save_path: str = "gpt.pt"

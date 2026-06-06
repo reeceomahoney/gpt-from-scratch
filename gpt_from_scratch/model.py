@@ -1,4 +1,3 @@
-import math
 import torch
 import torch.nn as nn
 from dataclasses import dataclass
@@ -25,12 +24,12 @@ class TransformerBlock(nn.Module):
         self.n_heads = n_heads
         self.head_dim = d_model // n_heads
 
+        self.dropout = config.dropout
         self.k = nn.Linear(d_model, d_model)
         self.q = nn.Linear(d_model, d_model)
         self.v = nn.Linear(d_model, d_model)
         self.out_proj = nn.Linear(d_model, d_model)
         self.norm_1 = nn.LayerNorm(d_model)
-        self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout_1 = nn.Dropout(config.dropout)
 
         self.up_proj = nn.Linear(d_model, config.d_feedforward)
@@ -45,25 +44,27 @@ class TransformerBlock(nn.Module):
         return x.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
 
     def forward(self, x, attn_mask=None):
+        x = x + self._attention(self.norm_1(x), attn_mask)
+        x = x + self._feedforward(self.norm_2(x))
+        return x
+
+    def _attention(self, x, attn_mask):
         B, T, _ = x.shape
         k = self._split_heads(self.k(x))  # (B, H, T, head_dim)
         q = self._split_heads(self.q(x))
         v = self._split_heads(self.v(x))
 
-        scores = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)  # (B, H, T, T)
-        if attn_mask is not None:
-            scores = scores.masked_fill(~attn_mask[:, None], float("-inf"))
-        weights = self.attn_dropout(nn.functional.softmax(scores, dim=-1))
-        attn = weights @ v  # (B, H, T, head_dim)
+        mask = attn_mask[:, None] if attn_mask is not None else None
+        attn = nn.functional.scaled_dot_product_attention(
+            q, k, v, attn_mask=mask, dropout_p=self.dropout if self.training else 0.0
+        )  # (B, H, T, head_dim)
 
         # (B, H, T, head_dim) -> (B, T, d_model)
         attn = attn.transpose(1, 2).reshape(B, T, self.d_model)
-        attn = self.resid_dropout_1(self.out_proj(attn))
+        return self.resid_dropout_1(self.out_proj(attn))
 
-        x = x + self.norm_1(attn)
-        ffn = self.resid_dropout_2(self.down_proj(self.act(self.up_proj(x))))
-        x = x + self.norm_2(ffn)
-        return x
+    def _feedforward(self, x):
+        return self.resid_dropout_2(self.down_proj(self.act(self.up_proj(x))))
 
 
 class GPT(nn.Module):
@@ -77,10 +78,20 @@ class GPT(nn.Module):
         self.blocks = nn.ModuleList(
             nn.ModuleList([TransformerBlock(config) for _ in range(config.d_layers)])
         )
+        self.final_norm = nn.LayerNorm(config.d_model)
         self.final_linear = nn.Linear(config.d_model, config.vocab_size)
+        self.final_linear.weight = self.embedding.weight
+        self.apply(self._init_weights)
 
         n_params = sum(p.numel() for p in self.parameters())
         print(f"GPT initialized with {n_params / 1e6:.2f}M parameters")
+
+    @staticmethod
+    def _init_weights(module):
+        if isinstance(module, (nn.Linear, nn.Embedding)):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if isinstance(module, nn.Linear) and module.bias is not None:
+                nn.init.zeros_(module.bias)
 
     @property
     def device(self) -> torch.device:
@@ -98,7 +109,7 @@ class GPT(nn.Module):
         x = self.embed_dropout(x)
         for block in self.blocks:
             x = block(x, attn_mask)
-        return self.final_linear(x)
+        return self.final_linear(self.final_norm(x))
 
     def forward(self, inputs: list[str]):
         tokens, pad_mask = self.tokenizer.encode_batch(inputs)  # (B, T), (B, T)
