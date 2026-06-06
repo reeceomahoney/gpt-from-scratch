@@ -1,9 +1,10 @@
 import math
 import time
 from contextlib import nullcontext
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 import torch
+import wandb
 
 from gpt_from_scratch.data import TokenLoader
 from gpt_from_scratch.model import GPT, GPTConfig
@@ -37,6 +38,8 @@ class TrainConfig:
     compile: bool = True
     save_path: str = "gpt.pt"
     device: str = field(default_factory=lambda: default_device())
+    wandb_project: str = "gpt-from-scratch"
+    wandb_run_name: str | None = None
 
 
 def get_lr(step: int, config: TrainConfig) -> float:
@@ -72,6 +75,11 @@ def evaluate(model: GPT, loader: TokenLoader, config: TrainConfig) -> float:
 
 def main():
     config = TrainConfig()
+    wandb.init(
+        project=config.wandb_project,
+        name=config.wandb_run_name,
+        config=asdict(config),
+    )
     torch.manual_seed(0)
     if config.device.startswith("cuda"):
         torch.set_float32_matmul_precision("high")  # TF32 for the fp32 matmuls
@@ -120,8 +128,17 @@ def main():
             (loss / config.grad_accum_steps).backward()
             train_loss += loss.item() / config.grad_accum_steps
 
-        torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
         optimizer.step()
+
+        wandb.log(
+            {
+                "train/loss": train_loss,
+                "train/lr": lr,
+                "train/grad_norm": grad_norm.item(),
+            },
+            step=step,
+        )
 
         if step % config.eval_every == 0 or step == 1:
             val_loss = evaluate(model, val_loader, config)
@@ -136,14 +153,18 @@ def main():
                 best_val = val_loss
                 torch.save(model.state_dict(), config.save_path)
 
-            print(
-                f"step {step:6d} | train {train_loss:.4f} | "
-                f"val {val_loss:.4f} | perplexity {math.exp(val_loss):.2f} | "
-                f"lr {lr:.2e} | {tokens_per_sec / 1e3:.1f}K tok/s"
-                f"{' | saved best' if is_best else ''}"
+            wandb.log(
+                {
+                    "val/loss": val_loss,
+                    "val/perplexity": math.exp(val_loss),
+                    "val/best_loss": best_val,
+                    "perf/tokens_per_sec": tokens_per_sec,
+                },
+                step=step,
             )
 
-    print(f"best val {best_val:.4f} | saved model to {config.save_path}")
+    wandb.summary["best_val_loss"] = best_val
+    wandb.finish()
 
 
 if __name__ == "__main__":
