@@ -10,6 +10,7 @@ import wandb
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from gpt_from_scratch.data import TokenLoader
+from gpt_from_scratch.hellaswag import evaluate_hellaswag, load_val
 from gpt_from_scratch.model import GPT, GPTConfig
 
 
@@ -63,6 +64,7 @@ class TrainConfig:
     max_steps: int = 20000  # ~10B tokens at 0.5M/step (one pass of sample-10BT)
     eval_every: int = 500
     eval_steps: int = 50
+    eval_hellaswag: bool = True  # run the HellaSwag benchmark at each eval
     compile: bool = True
     save_path: str = "gpt.pt"
     device: str = field(default_factory=lambda: default_device())
@@ -160,6 +162,15 @@ def main():
     )
     val_loader = TokenLoader(config.data_dir, "val", config.block_size, seed=ddp.rank)
 
+    # Load once up front; skip (don't crash) if the dataset can't be fetched.
+    hellaswag = None
+    if config.eval_hellaswag:
+        try:
+            hellaswag = load_val()
+        except Exception as e:
+            if ddp.is_master:
+                print(f"hellaswag disabled (failed to load dataset: {e})")
+
     ddp_model = DDP(model, device_ids=[ddp.local_rank]) if ddp.enabled else None
     loss_fn = ddp_model if ddp_model is not None else model
     if config.compile and device.startswith("cuda"):
@@ -223,12 +234,22 @@ def main():
             )
 
         if step % config.eval_every == 0 or step == 1:
-            val_loss = evaluate(model, val_loader, config, ddp)
+            # Throughput for the training interval, measured before evals run.
             if device.startswith("cuda"):
                 torch.cuda.synchronize()
-            now = time.perf_counter()
-            tokens_per_sec = tokens_per_step * config.eval_every / (now - last_log_time)
-            last_log_time = now
+            tokens_per_sec = (
+                tokens_per_step
+                * config.eval_every
+                / (time.perf_counter() - last_log_time)
+            )
+
+            val_loss = evaluate(model, val_loader, config, ddp)
+            hs = None
+            if hellaswag is not None:
+                hs = evaluate_hellaswag(
+                    model, hellaswag, device, amp=lambda: autocast_ctx(device), ddp=ddp
+                )
+            last_log_time = time.perf_counter()  # exclude eval time from next interval
 
             is_best = val_loss < best_val
             if is_best:
@@ -237,21 +258,22 @@ def main():
                     torch.save(model.state_dict(), config.save_path)
 
             if ddp.is_master:
+                hs_str = f" | hswag {hs['acc_norm']:.4f}" if hs is not None else ""
                 print(
                     f"eval  {step:5d}/{config.max_steps} | "
                     f"val_loss {val_loss:.4f} | ppl {math.exp(val_loss):.2f} | "
-                    f"best {best_val:.4f}{' *' if is_best else ''} | "
+                    f"best {best_val:.4f}{' *' if is_best else ''}{hs_str} | "
                     f"{tokens_per_sec:,.0f} tok/s"
                 )
-                wandb.log(
-                    {
-                        "val/loss": val_loss,
-                        "val/perplexity": math.exp(val_loss),
-                        "val/best_loss": best_val,
-                        "perf/tokens_per_sec": tokens_per_sec,
-                    },
-                    step=step,
-                )
+                log_data = {
+                    "val/loss": val_loss,
+                    "val/perplexity": math.exp(val_loss),
+                    "perf/tokens_per_sec": tokens_per_sec,
+                }
+                if hs is not None:
+                    log_data["val/hellaswag_acc"] = hs["acc"]
+                    log_data["val/hellaswag_acc_norm"] = hs["acc_norm"]
+                wandb.log(log_data, step=step)
 
     if ddp.is_master:
         wandb.summary["best_val_loss"] = best_val

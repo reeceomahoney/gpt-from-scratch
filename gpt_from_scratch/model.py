@@ -67,8 +67,7 @@ class TransformerBlock(nn.Module):
                 q, k, v, attn_mask=attn_mask[:, None], dropout_p=dropout_p
             )
         else:
-            # Packed token batches have no padding: let SDPA build the causal mask
-            # itself, which enables the fused/flash kernels.
+            # No padding: SDPA builds the causal mask itself, enabling flash kernels.
             attn = nn.functional.scaled_dot_product_attention(
                 q, k, v, is_causal=True, dropout_p=dropout_p
             )  # (B, H, T, head_dim)
@@ -97,9 +96,8 @@ class GPT(nn.Module):
         self.final_linear.weight = self.embedding.weight
         self.apply(self._init_weights)
 
-        # GPT-2 residual scaling: shrink the projections that write into the
-        # residual stream by 1/sqrt(2 * n_layers) so its variance stays ~constant
-        # with depth. Without this, deep pre-norm stacks initialize too hot.
+        # GPT-2 residual scaling: shrink residual-stream writes by 1/sqrt(2*n_layers)
+        # so activation variance stays ~constant with depth.
         residual_std = 0.02 / math.sqrt(2 * config.d_layers)
         for name, p in self.named_parameters():
             if name.endswith(("out_proj.weight", "down_proj.weight")):
