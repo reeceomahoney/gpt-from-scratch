@@ -207,11 +207,12 @@ def main():
             torch.cuda.synchronize()
         step_ms = (time.perf_counter() - step_start) * 1000
         if ddp.is_master:
-            print(
-                f"step {step:5d}/{config.max_steps} | "
-                f"loss {train_loss:.4f} | lr {lr:.2e} | "
-                f"grad_norm {grad_norm.item():.3f} | {step_ms:.0f} ms"
-            )
+            if step % 100 == 0 or step == 1:
+                print(
+                    f"step {step:5d}/{config.max_steps} | "
+                    f"loss {train_loss:.4f} | lr {lr:.2e} | "
+                    f"grad_norm {grad_norm.item():.3f} | {step_ms:.0f} ms"
+                )
             wandb.log(
                 {
                     "train/loss": train_loss,

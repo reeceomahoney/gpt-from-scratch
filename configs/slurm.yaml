@@ -2,11 +2,11 @@ clusters:
   isambard:
     host: u6jz.aip2.isambard
     remote_path: /home/u6jz/reece.u6jz/gpt-from-scratch
-    time: 24
+    time: 3
     gpu: ""
     ngpu: 4
     cpus: 288
-    mem: 1600M
+    mem: 1500M
     partition: workq
 
 envs:
