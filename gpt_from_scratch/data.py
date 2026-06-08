@@ -108,8 +108,9 @@ class TokenLoader:
     known memory leak from holding long-lived memmaps).
     """
 
-    def __init__(self, data_dir: str, split: str, block_size: int):
+    def __init__(self, data_dir: str, split: str, block_size: int, seed: int = 0):
         self.block_size = block_size
+        self.gen = torch.Generator().manual_seed(seed)
         data = Path(data_dir)
         if split == "train":
             self.shards = sorted(data.glob("train_*.bin"))
@@ -125,10 +126,12 @@ class TokenLoader:
 
     def batch(self, batch_size: int, device: str) -> tuple[torch.Tensor, torch.Tensor]:
         # Pick a random shard each batch so training mixes across the corpus.
-        shard = self.shards[int(torch.randint(len(self.shards), (1,)).item())]
+        shard = self.shards[
+            int(torch.randint(len(self.shards), (1,), generator=self.gen).item())
+        ]
         data = self._memmap(shard)
         max_start = len(data) - self.block_size - 1
-        starts = torch.randint(0, max_start, (batch_size,))
+        starts = torch.randint(0, max_start, (batch_size,), generator=self.gen)
 
         x = torch.empty((batch_size, self.block_size), dtype=torch.long)
         y = torch.empty((batch_size, self.block_size), dtype=torch.long)

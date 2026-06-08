@@ -4,8 +4,8 @@ clusters:
     remote_path: /home/u6jz/reece.u6jz/gpt-from-scratch
     time: 24
     gpu: ""
-    ngpu: 1
-    cpus: 72
+    ngpu: 4
+    cpus: 288
     mem: 1600M
     partition: workq
 
@@ -24,4 +24,4 @@ envs:
 
 command: |-
   module load cuda/12.6
-  uv run gpt_from_scratch/train.py
+  uv run torchrun --standalone --nproc_per_node=4 gpt_from_scratch/train.py

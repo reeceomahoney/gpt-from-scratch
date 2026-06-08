@@ -133,39 +133,18 @@ class GPT(nn.Module):
             x = block(x, attn_mask)
         return self.final_linear(self.final_norm(x))
 
-    def loss_from_tokens(
+    def forward(
         self, tokens: torch.Tensor, targets: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Loss for pre-tokenized, densely-packed (B, T) batches.
 
         No padding mask: attention is causal via SDPA's is_causal path. This is
-        the hot path for web-scale training.
+        the hot path for web-scale training, and the entry point DDP drives.
         """
         logits = self.forward_tokens(tokens)  # (B, T, vocab)
         loss = nn.functional.cross_entropy(
             logits.reshape(-1, logits.size(-1)), targets.reshape(-1)
         )
-        return logits, loss
-
-    def forward(self, inputs: list[str]):
-        tokens, pad_mask = self.tokenizer.encode_batch(inputs)  # (B, T), (B, T)
-        tokens = tokens.to(self.device)
-        pad_mask = pad_mask.to(tokens.device)
-        T = tokens.size(1)
-
-        causal = torch.tril(torch.ones(T, T, dtype=torch.bool, device=tokens.device))
-        attn_mask = causal[None] & pad_mask[:, None, :]  # (B, T, T)
-
-        logits = self.forward_tokens(tokens, attn_mask)
-
-        # Next-character prediction: predict token t+1 from positions up to t.
-        shift_logits = logits[:, :-1].reshape(-1, logits.size(-1))
-        targets = tokens[:, 1:].clone()
-        targets[~pad_mask[:, 1:]] = -100
-        loss = nn.functional.cross_entropy(
-            shift_logits, targets.reshape(-1), ignore_index=-100
-        )
-
         return logits, loss
 
     @torch.no_grad()

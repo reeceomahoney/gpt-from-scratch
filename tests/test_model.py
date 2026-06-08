@@ -26,20 +26,12 @@ def test_transformer_block():
     assert x.shape == (2, 8, 64)
 
 
-def test_gpt():
-    config = _small_config()
-    gpt = model.GPT(config)
-    logits, loss = gpt(["hi", "hello"])
-    assert logits.shape == (2, 5, config.vocab_size)  # "hello" -> 5 bytes
-    assert loss.ndim == 0
-
-
-def test_loss_from_tokens():
+def test_forward_loss():
     config = _small_config()
     gpt = model.GPT(config)
     x = torch.randint(0, config.vocab_size, (2, 16))
     y = torch.randint(0, config.vocab_size, (2, 16))
-    logits, loss = gpt.loss_from_tokens(x, y)
+    logits, loss = gpt(x, y)
     assert logits.shape == (2, 16, config.vocab_size)
     assert loss.ndim == 0
 
