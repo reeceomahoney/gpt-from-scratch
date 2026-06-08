@@ -111,9 +111,11 @@ def main():
     tokens_per_step = (
         config.micro_batch_size * config.block_size * config.grad_accum_steps
     )
+    print(f"training for {config.max_steps} steps ({tokens_per_step:,} tokens/step)")
     best_val = float("inf")
     last_log_time = time.perf_counter()
     for step in range(1, config.max_steps + 1):
+        step_start = time.perf_counter()
         lr = get_lr(step, config)
         for group in optimizer.param_groups:
             group["lr"] = lr
@@ -130,6 +132,15 @@ def main():
 
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
         optimizer.step()
+
+        if config.device.startswith("cuda"):
+            torch.cuda.synchronize()
+        step_ms = (time.perf_counter() - step_start) * 1000
+        print(
+            f"step {step:5d}/{config.max_steps} | "
+            f"loss {train_loss:.4f} | lr {lr:.2e} | "
+            f"grad_norm {grad_norm.item():.3f} | {step_ms:.0f} ms"
+        )
 
         wandb.log(
             {
@@ -152,6 +163,13 @@ def main():
             if is_best:
                 best_val = val_loss
                 torch.save(model.state_dict(), config.save_path)
+
+            print(
+                f"eval  {step:5d}/{config.max_steps} | "
+                f"val_loss {val_loss:.4f} | ppl {math.exp(val_loss):.2f} | "
+                f"best {best_val:.4f}{' *' if is_best else ''} | "
+                f"{tokens_per_sec:,.0f} tok/s"
+            )
 
             wandb.log(
                 {
